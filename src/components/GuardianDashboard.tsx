@@ -1,10 +1,12 @@
 import { useState, useEffect } from "react";
 import { 
   LogOut, ClipboardList, CreditCard, AlertCircle, Info, 
-  Search, CheckCircle2, XCircle, User
+  Search, CheckCircle2, XCircle, User, RefreshCw
 } from "lucide-react";
 import { motion } from "motion/react";
 import { cn } from "../lib/utils";
+import { firebaseService } from "../services/firebaseService";
+import { db } from "../lib/firebase";
 
 export default function GuardianDashboard({ user, onLogout }: { user: any; onLogout: () => void }) {
   const [santriData, setSantriData] = useState<any>(null);
@@ -13,41 +15,88 @@ export default function GuardianDashboard({ user, onLogout }: { user: any; onLog
   const [announcements, setAnnouncements] = useState<any[]>([]);
   const [payments, setPayments] = useState<any[]>([]);
   const [tanggunganTotal, setTanggunganTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
   
-  useEffect(() => {
-    // Find linked santri by WA (robust match)
-    const allSantri = JSON.parse(localStorage.getItem("santri_data") || "[]");
-    const normalizedTarget = user.linkedWa?.replace(/\D/g, '');
-    const found = allSantri.find((s: any) => {
-      const normalizedS = s.noWa?.replace(/\D/g, '');
-      return normalizedS === normalizedTarget;
-    });
-    setSantriData(found);
+  const refreshData = async () => {
+    setLoading(true);
+    try {
+      let foundSantri = null;
+      const normalizedTarget = user.linkedWa?.replace(/\D/g, '');
 
-    if (found) {
-      setAttendance(JSON.parse(localStorage.getItem("attendance_data") || "{}"));
-      
-      const allViolations = JSON.parse(localStorage.getItem("violations_data") || "[]");
-      setViolations(allViolations.filter((v: any) => v.santriId === found.nis));
+      if (db) {
+        // In reality, we'd need a better way to query santri by WA if privacy is concern
+        // But for now, we get all and match if db is small, or specific query if service supports it
+        const allSantri = await firebaseService.getSantri(null as any); // get all genders or specific one
+        foundSantri = allSantri.find(s => s.noWa?.replace(/\D/g, '') === normalizedTarget);
+      } else {
+        const allSantri = JSON.parse(localStorage.getItem("santri_data") || "[]");
+        foundSantri = allSantri.find((s: any) => s.noWa?.replace(/\D/g, '') === normalizedTarget);
+      }
 
-      const allPayments = JSON.parse(localStorage.getItem("payments_data") || "[]");
-      const santriPayments = allPayments.filter((p: any) => p.santriId === found.nis);
-      setPayments(santriPayments);
+      setSantriData(foundSantri);
 
-      // Simple latest status for Bulanan
-      const latestBulanan = santriPayments.filter((p: any) => p.type === 'bulanan').sort((a: any, b: any) => b.date.localeCompare(a.date))[0];
-      
-      // Calculate total tanggungan
-      const totalTang = santriPayments
-        .filter((p: any) => p.type === 'tanggungan')
-        .reduce((acc: number, curr: any) => acc + (curr.amount || 0), 0);
-      setTanggunganTotal(totalTang);
+      if (foundSantri) {
+        if (db) {
+          const [att, viol, pays, info] = await Promise.all([
+            firebaseService.getAttendance(new Date().toISOString().split('T')[0]), // Note: this only gets today's for now in service, might need range
+            firebaseService.getViolations([foundSantri.nis]),
+            firebaseService.getPayments([foundSantri.nis]),
+            firebaseService.getInformation()
+          ]);
+          
+          // Actually we need last 7 days for attendance
+          const sevenDaysAtt: any = {};
+          for (let i = 0; i < 7; i++) {
+            const d = new Date();
+            d.setDate(d.getDate() - i);
+            const dateStr = d.toISOString().split('T')[0];
+            const dayData = await firebaseService.getAttendance(dateStr);
+            Object.assign(sevenDaysAtt, dayData);
+          }
+
+          setAttendance(sevenDaysAtt);
+          setViolations(viol);
+          setPayments(pays);
+          setAnnouncements(info);
+          
+          const totalTang = pays
+            .filter((p: any) => p.type === 'tanggungan')
+            .reduce((acc: number, curr: any) => acc + (curr.amount || 0), 0);
+          setTanggunganTotal(totalTang);
+        } else {
+          setAttendance(JSON.parse(localStorage.getItem("attendance_data") || "{}"));
+          
+          const allViolations = JSON.parse(localStorage.getItem("violations_data") || "[]");
+          setViolations(allViolations.filter((v: any) => v.santriId === foundSantri.nis));
+
+          const allPayments = JSON.parse(localStorage.getItem("payments_data") || "[]");
+          const santriPayments = allPayments.filter((p: any) => p.santriId === foundSantri.nis);
+          setPayments(santriPayments);
+          setAnnouncements(JSON.parse(localStorage.getItem("info_data") || "[]"));
+
+          const totalTang = santriPayments
+            .filter((p: any) => p.type === 'tanggungan')
+            .reduce((acc: number, curr: any) => acc + (curr.amount || 0), 0);
+          setTanggunganTotal(totalTang);
+        }
+      }
+    } finally {
+      setLoading(false);
     }
+  };
 
-    setAnnouncements(JSON.parse(localStorage.getItem("info_data") || "[]"));
+  useEffect(() => {
+    refreshData();
   }, [user.linkedWa]);
 
   const bulananStatus = payments.find(p => p.type === 'bulanan' && p.status === 'Tunggakan') ? 'Ada Tunggakan' : 'Lunas';
+
+  if (loading) return (
+    <div className="flex h-screen items-center justify-center flex-col gap-4">
+      <RefreshCw size={32} className="text-emerald-900 animate-spin" />
+      <p className="text-gray-500 font-bold uppercase tracking-widest text-[10px]">Memuat Data...</p>
+    </div>
+  );
 
   if (!santriData) return (
     <div className="flex h-screen items-center justify-center flex-col gap-4">
@@ -62,7 +111,13 @@ export default function GuardianDashboard({ user, onLogout }: { user: any; onLog
       <header className="flex justify-between items-center">
         <div>
           <h1 className="text-4xl font-black serif tracking-tight text-slate-900">Wali Santri</h1>
-          <p className="text-slate-500 font-medium">Selamat datang, orang tua dari {santriData.nama}</p>
+          <div className="flex items-center gap-2 mt-1">
+            <span className={cn("inline-block h-2 w-2 rounded-full", db ? "bg-emerald-500" : "bg-rose-500 animate-pulse")} />
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none">
+              {db ? "Cloud Sync Active" : "Local Mode (Offline)"}
+            </span>
+          </div>
+          <p className="text-slate-500 font-medium mt-2">Selamat datang, orang tua dari {santriData.nama}</p>
         </div>
         <button onClick={onLogout} className="p-3 text-rose-500 hover:bg-rose-50 rounded-2xl transition-all border border-rose-100 shadow-sm bg-white">
           <LogOut size={24} />
@@ -123,7 +178,7 @@ export default function GuardianDashboard({ user, onLogout }: { user: any; onLog
                     <div className="p-8 text-center text-slate-400 text-sm italic">Belum ada catatan pembayaran bulanan</div>
                   ) : (
                     payments.filter(p => p.type === 'bulanan').map((p, idx) => (
-                      <div key={idx} className="p-6 flex justify-between items-center">
+                      <div key={`${p.id}_${idx}`} className="p-6 flex justify-between items-center">
                         <div>
                           <p className="font-bold text-slate-800">{p.month} {p.year}</p>
                           <p className="text-[10px] text-slate-400 font-mono mt-1 pr-1 inline-block border-r border-slate-200">{new Date(p.date).toLocaleDateString()}</p>
@@ -147,7 +202,7 @@ export default function GuardianDashboard({ user, onLogout }: { user: any; onLog
                     <div className="p-8 text-center text-slate-400 text-sm italic">Tidak ada tanggungan lain</div>
                   ) : (
                     payments.filter(p => p.type === 'tanggungan').map((p, idx) => (
-                      <div key={idx} className="p-6 flex justify-between items-center">
+                      <div key={`${p.id}_${idx}`} className="p-6 flex justify-between items-center">
                         <div>
                           <p className="font-bold text-slate-800">{p.month || 'Tanggungan'}</p>
                           <p className="text-[10px] text-slate-400 font-mono mt-1 uppercase tracking-widest">{new Date(p.date || Date.now()).toLocaleDateString()}</p>
@@ -232,7 +287,7 @@ export default function GuardianDashboard({ user, onLogout }: { user: any; onLog
                 </div>
               ) : (
                 violations.map((v, idx) => (
-                  <div key={idx} className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm relative overflow-hidden">
+                  <div key={`${v.id}_${idx}`} className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm relative overflow-hidden">
                     <div className={cn("absolute left-0 top-0 bottom-0 w-1.5", v.level === "Ringan" ? "bg-yellow-400" : v.level === "Sedang" ? "bg-orange-400" : "bg-rose-500")} />
                     <div className="flex justify-between items-start">
                       <div>
@@ -263,7 +318,7 @@ export default function GuardianDashboard({ user, onLogout }: { user: any; onLog
               </div>
             ) : (
               announcements.map((info, idx) => (
-                <div key={idx} className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-3">
+                <div key={`${info.id}_${idx}`} className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-3">
                   <span className="text-[10px] font-bold text-indigo-600 uppercase tracking-widest">{new Date(info.date).toLocaleDateString()}</span>
                   <h4 className="font-bold text-slate-900 leading-snug">{info.title}</h4>
                   <p className="text-xs text-slate-500 line-clamp-3 leading-relaxed">{info.content}</p>

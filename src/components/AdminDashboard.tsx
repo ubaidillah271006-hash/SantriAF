@@ -3,29 +3,87 @@ import { Routes, Route, Link, useLocation } from "react-router-dom";
 import { 
   Users, ClipboardList, CreditCard, AlertCircle, Info, 
   LogOut, Plus, Search, Trash2, CheckCircle2, XCircle,
-  Edit2
+  Edit2, CloudUpload, RefreshCw
 } from "lucide-react";
 import { motion } from "motion/react";
 import { cn } from "../lib/utils";
+import { firebaseService } from "../services/firebaseService";
+import { db } from "../lib/firebase";
 
-// Mock Data Management
+// Data Management
 export default function AdminDashboard({ user, onLogout }: { user: any; onLogout: () => void }) {
   const location = useLocation();
 
   // Lifted state to keep everything in sync
   const [santriList, setSantriList] = useState<any[]>([]);
   const [payments, setPayments] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
 
-  const refreshData = () => {
-    const savedSantri = localStorage.getItem("santri_data");
-    const allSantri = savedSantri ? JSON.parse(savedSantri) : [];
-    const filteredSantri = allSantri.filter((s: any) => s.gender === user.adminType);
-    setSantriList(filteredSantri);
+  const refreshData = async () => {
+    setLoading(true);
+    try {
+      if (db) {
+        const santri = await firebaseService.getSantri(user.adminType);
+        setSantriList(santri);
+        
+        const mySantriNis = santri.map(s => s.nis);
+        const pays = await firebaseService.getPayments(mySantriNis);
+        setPayments(pays);
+      } else {
+        // Fallback to local storage if Firebase not configured
+        const savedSantri = localStorage.getItem("santri_data");
+        const allSantri = savedSantri ? JSON.parse(savedSantri) : [];
+        const filteredSantri = allSantri.filter((s: any) => s.gender === user.adminType);
+        setSantriList(filteredSantri);
 
-    const savedPayments = localStorage.getItem("payments_data");
-    const allPayments = savedPayments ? JSON.parse(savedPayments) : [];
-    const mySantriNis = filteredSantri.map((s: any) => s.nis);
-    setPayments(allPayments.filter((p: any) => mySantriNis.includes(p.santriId)));
+        const savedPayments = localStorage.getItem("payments_data");
+        const allPayments = savedPayments ? JSON.parse(savedPayments) : [];
+        const mySantriNis = filteredSantri.map((s: any) => s.nis);
+        setPayments(allPayments.filter((p: any) => mySantriNis.includes(p.santriId)));
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSyncToCloud = async () => {
+    if (!db) {
+      alert("Firebase belum dikonfigurasi. Silakan ikuti petunjuk setup.");
+      return;
+    }
+    if (!confirm("Data lokal akan diunggah ke Cloud. Lanjutkan?")) return;
+    
+    setSyncing(true);
+    try {
+      const allSantri = JSON.parse(localStorage.getItem("santri_data") || "[]");
+      const allPayments = JSON.parse(localStorage.getItem("payments_data") || "[]");
+      const allViolations = JSON.parse(localStorage.getItem("violations_data") || "[]");
+      const allInfo = JSON.parse(localStorage.getItem("info_data") || "[]");
+      const allAttendance = JSON.parse(localStorage.getItem("attendance_data") || "{}");
+
+      // Batch migration
+      for (const s of allSantri) await firebaseService.saveSantri(s);
+      for (const p of allPayments) await firebaseService.savePayment(p);
+      for (const v of allViolations) await firebaseService.saveViolation(v);
+      for (const i of allInfo) await firebaseService.saveInformation(i);
+      
+      // Attendance migration
+      for (const key of Object.keys(allAttendance)) {
+        const [date, santriId] = key.split('_');
+        if (date && santriId) {
+          await firebaseService.saveAttendance(date, santriId, allAttendance[key]);
+        }
+      }
+
+      alert("Sinkronisasi berhasil!");
+      refreshData();
+    } catch (e) {
+      alert("Gagal sinkronisasi data.");
+      console.error(e);
+    } finally {
+      setSyncing(false);
+    }
   };
 
   useEffect(() => {
@@ -86,24 +144,53 @@ export default function AdminDashboard({ user, onLogout }: { user: any; onLogout
 
       {/* Main Content */}
       <main className="flex-1 overflow-y-auto bg-slate-50">
-        <header className="sticky top-0 z-10 bg-slate-50/80 backdrop-blur-md p-6 flex justify-between items-center">
-          <h2 className="text-2xl font-bold text-slate-900 leading-none">
-            {menuItems.find(i => i.path === location.pathname)?.label || "Dashboard Admin"}
-          </h2>
-          <div className="flex items-center gap-2 text-xs font-bold text-slate-400 uppercase tracking-widest leading-none">
-            Admin Panel <CheckCircle2 size={14} className="text-emerald-500" />
+        <header className="sticky top-0 z-10 bg-slate-50/80 backdrop-blur-md p-6 flex justify-between items-center border-b border-slate-200/50">
+          <div className="flex flex-col">
+            <h2 className="text-2xl font-bold text-slate-900 leading-none">
+              {menuItems.find(i => i.path === location.pathname)?.label || "Dashboard Admin"}
+            </h2>
+            <div className="mt-2 flex items-center gap-2">
+              <span className={cn("inline-block h-2 w-2 rounded-full", db ? "bg-emerald-500" : "bg-rose-500 animate-pulse")} />
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none">
+                {db ? "Cloud Database Connected" : "Local Database (Offline)"}
+              </span>
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-3">
+             {loading && <RefreshCw size={16} className="text-emerald-600 animate-spin" />}
+             {!db ? (
+               <div className="flex flex-col items-end">
+                <span className="text-[8px] font-black text-rose-500 uppercase tracking-tighter mb-1">Dukungan Multi-Perangkat Nonaktif</span>
+               </div>
+             ) : (
+               <button 
+                 onClick={handleSyncToCloud} 
+                 disabled={syncing}
+                 className="flex items-center gap-2 bg-white text-emerald-700 px-4 py-2 rounded-xl border border-emerald-100 hover:bg-emerald-50 transition-all font-bold text-[10px] uppercase tracking-widest shadow-sm"
+               >
+                 <CloudUpload size={14} className={cn(syncing && "animate-bounce")} />
+                 {syncing ? "Syncing..." : "Sync ke Cloud"}
+               </button>
+             )}
           </div>
         </header>
 
         <div className="p-6 max-w-7xl mx-auto">
-          <Routes>
-            <Route path="santri" element={<SantriManagement user={user} santriList={santriList} onUpdate={refreshData} />} />
-            <Route path="absensi" element={<AbsensiManagement user={user} santriList={santriList} />} />
-            <Route path="pembayaran" element={<PembayaranManagement user={user} santriList={santriList} payments={payments} onUpdate={refreshData} />} />
-            <Route path="pelanggaran" element={<PelanggaranManagement user={user} santriList={santriList} onUpdate={refreshData} />} />
-            <Route path="informasi" element={<InformasiManagement />} />
-            <Route path="/" element={<Navigate to="santri" />} />
-          </Routes>
+          {loading && !santriList.length ? (
+            <div className="flex justify-center py-20">
+              <RefreshCw className="animate-spin text-emerald-600" size={32} />
+            </div>
+          ) : (
+            <Routes>
+              <Route path="santri" element={<SantriManagement user={user} santriList={santriList} onUpdate={refreshData} />} />
+              <Route path="absensi" element={<AbsensiManagement user={user} santriList={santriList} />} />
+              <Route path="pembayaran" element={<PembayaranManagement user={user} santriList={santriList} payments={payments} onUpdate={refreshData} />} />
+              <Route path="pelanggaran" element={<PelanggaranManagement user={user} santriList={santriList} onUpdate={refreshData} />} />
+              <Route path="informasi" element={<InformasiManagement />} />
+              <Route path="/" element={<Navigate to="santri" />} />
+            </Routes>
+          )}
         </div>
       </main>
     </div>
@@ -117,24 +204,30 @@ function SantriManagement({ user, santriList, onUpdate }: { user: any; santriLis
   const [error, setError] = useState("");
   const [newSantri, setNewSantri] = useState({ nis: "", nama: "", sekolahUmum: "", sekolahDiniyah: "", alamat: "", noWa: "", gender: user.adminType, status: "Aktif" });
 
-  const saveSantri = (e: FormEvent) => {
+  const saveSantri = async (e: FormEvent) => {
     e.preventDefault();
     setError("");
-    const saved = localStorage.getItem("santri_data");
-    let all = saved ? JSON.parse(saved) : [];
     
-    if (!editMode && all.some((s: any) => s.nis === newSantri.nis)) {
+    if (!editMode && santriList.some((s: any) => s.nis === newSantri.nis)) {
       setError("NIS sudah terdaftar!");
       return;
     }
 
-    if (editMode) {
-      all = all.map((s: any) => s.nis === editMode ? { ...newSantri, gender: user.adminType } : s);
+    const data = { ...newSantri, gender: user.adminType };
+
+    if (db) {
+      await firebaseService.saveSantri(data);
     } else {
-      all = [...all, { ...newSantri, gender: user.adminType }];
+      const saved = localStorage.getItem("santri_data");
+      let all = saved ? JSON.parse(saved) : [];
+      if (editMode) {
+        all = all.map((s: any) => s.nis === editMode ? data : s);
+      } else {
+        all = [...all, data];
+      }
+      localStorage.setItem("santri_data", JSON.stringify(all));
     }
     
-    localStorage.setItem("santri_data", JSON.stringify(all));
     onUpdate();
     closeModal();
   };
@@ -146,20 +239,25 @@ function SantriManagement({ user, santriList, onUpdate }: { user: any; santriLis
     setNewSantri({ nis: "", nama: "", sekolahUmum: "", sekolahDiniyah: "", alamat: "", noWa: "", gender: user.adminType, status: "Aktif" });
   };
 
-  const deleteSantri = (nis: string) => {
+  const deleteSantri = async (nis: string) => {
     if (!confirm("Hapus data santri ini?")) return;
-    const saved = localStorage.getItem("santri_data");
-    const all = saved ? JSON.parse(saved) : [];
-    const updated = all.filter((s: any) => s.nis !== nis);
-    localStorage.setItem("santri_data", JSON.stringify(updated));
     
-    // Also cleanup linked data
-    const allAtt = JSON.parse(localStorage.getItem("attendance_data") || "{}");
-    const newAtt = { ...allAtt };
-    Object.keys(newAtt).forEach(key => {
-      if (key.includes(`_${nis}`)) delete newAtt[key];
-    });
-    localStorage.setItem("attendance_data", JSON.stringify(newAtt));
+    if (db) {
+      await firebaseService.deleteSantri(nis);
+    } else {
+      const saved = localStorage.getItem("santri_data");
+      const all = saved ? JSON.parse(saved) : [];
+      const updated = all.filter((s: any) => s.nis !== nis);
+      localStorage.setItem("santri_data", JSON.stringify(updated));
+      
+      // Also cleanup linked data
+      const allAtt = JSON.parse(localStorage.getItem("attendance_data") || "{}");
+      const newAtt = { ...allAtt };
+      Object.keys(newAtt).forEach(key => {
+        if (key.includes(`_${nis}`)) delete newAtt[key];
+      });
+      localStorage.setItem("attendance_data", JSON.stringify(newAtt));
+    }
     
     onUpdate();
   };
@@ -321,15 +419,38 @@ function SantriManagement({ user, santriList, onUpdate }: { user: any; santriLis
 }
 
 function AbsensiManagement({ user, santriList }: { user: any; santriList: any[] }) {
-  const [attendance, setAttendance] = useState<any>(() => JSON.parse(localStorage.getItem("attendance_data") || "{}"));
+  const [attendance, setAttendance] = useState<any>({});
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [loading, setLoading] = useState(false);
 
-  const toggleStatus = (santriId: string, activity: string) => {
+  const fetchAttendance = async () => {
+    setLoading(true);
+    if (db) {
+      const data = await firebaseService.getAttendance(date);
+      setAttendance(data);
+    } else {
+      setAttendance(JSON.parse(localStorage.getItem("attendance_data") || "{}"));
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    fetchAttendance();
+  }, [date]);
+
+  const toggleStatus = async (santriId: string, activity: string) => {
     const dayKey = `${date}_${santriId}`;
     const current = attendance[dayKey] || { subuh: false, umum: false, diniyah: false, malam: false, belajar: false };
-    const updated = { ...attendance, [dayKey]: { ...current, [activity]: !current[activity] } };
-    setAttendance(updated);
-    localStorage.setItem("attendance_data", JSON.stringify(updated));
+    const updatedStatus = { ...current, [activity]: !current[activity] };
+    const updatedAttendance = { ...attendance, [dayKey]: updatedStatus };
+    
+    setAttendance(updatedAttendance);
+
+    if (db) {
+      await firebaseService.saveAttendance(date, santriId, updatedStatus);
+    } else {
+      localStorage.setItem("attendance_data", JSON.stringify(updatedAttendance));
+    }
   };
 
   return (
@@ -337,22 +458,33 @@ function AbsensiManagement({ user, santriList }: { user: any; santriList: any[] 
       <div className="bg-white p-4 rounded-2xl shadow-sm flex items-center justify-between border border-slate-200 px-6">
         <div className="flex items-center gap-4">
           <label className="font-bold text-slate-400 uppercase tracking-widest text-[10px]">Pilih Tanggal</label>
-          <input 
-            type="date" 
-            value={date} 
-            onChange={e => setDate(e.target.value)}
-            className="bg-slate-50 px-4 py-2 rounded-xl outline-none border border-slate-100 font-bold text-sm text-slate-700"
-          />
+          <div className="flex items-center gap-2">
+            <input 
+              type="date" 
+              value={date} 
+              onChange={e => setDate(e.target.value)}
+              className="bg-slate-50 px-4 py-2 rounded-xl outline-none border border-slate-100 font-bold text-sm text-slate-700"
+            />
+            {loading && <RefreshCw size={14} className="text-emerald-500 animate-spin" />}
+          </div>
         </div>
         <button 
-          onClick={() => {
+          onClick={async () => {
             const updated = { ...attendance };
-            santriList.forEach(s => {
+            const statusFull = { subuh: true, umum: true, diniyah: true, malam: true, belajar: true };
+            
+            for (const s of santriList) {
               const dayKey = `${date}_${s.nis}`;
-              updated[dayKey] = { subuh: true, umum: true, diniyah: true, malam: true, belajar: true };
-            });
+              updated[dayKey] = statusFull;
+              if (db) {
+                await firebaseService.saveAttendance(date, s.nis, statusFull);
+              }
+            }
+            
             setAttendance(updated);
-            localStorage.setItem("attendance_data", JSON.stringify(updated));
+            if (!db) {
+              localStorage.setItem("attendance_data", JSON.stringify(updated));
+            }
           }}
           className="text-emerald-600 font-bold text-[10px] bg-emerald-50 px-4 py-2 rounded-xl hover:bg-emerald-100 transition-all uppercase tracking-widest"
         >
@@ -426,16 +558,23 @@ function PembayaranManagement({ user, santriList, payments, onUpdate }: { user: 
 
   const hijriMonths = ["Syawal", "Dzulqa'dah", "Dzulhijjah", "Muharram", "Safar", "Rabiul Awwal", "Rabiul Akhir", "Jumadil Awwal", "Jumadil Akhir", "Rajab", "Syaban", "Ramadhan"];
 
-  const savePay = (e: FormEvent) => {
+  const savePay = async (e: FormEvent) => {
     e.preventDefault();
-    const all = JSON.parse(localStorage.getItem("payments_data") || "[]");
-    let updated;
-    if (editMode) {
-      updated = all.map((p: any) => p.id === editMode ? { ...newPay, id: p.id, date: p.date } : p);
+    const data = { ...newPay, id: editMode || Date.now().toString(), date: (newPay as any).date || new Date().toISOString() };
+    
+    if (db) {
+      await firebaseService.savePayment(data);
     } else {
-      updated = [...all, { ...newPay, id: Date.now().toString(), date: new Date().toISOString() }];
+      const all = JSON.parse(localStorage.getItem("payments_data") || "[]");
+      let updated;
+      if (editMode) {
+        updated = all.map((p: any) => p.id === editMode ? data : p);
+      } else {
+        updated = [...all, data];
+      }
+      localStorage.setItem("payments_data", JSON.stringify(updated));
     }
-    localStorage.setItem("payments_data", JSON.stringify(updated));
+    
     onUpdate();
     closeModal();
   };
@@ -454,11 +593,16 @@ function PembayaranManagement({ user, santriList, payments, onUpdate }: { user: 
     });
   };
 
-  const deletePay = (id: string) => {
+  const deletePay = async (id: string) => {
     if (!confirm("Hapus catatan pembayaran ini?")) return;
-    const all = JSON.parse(localStorage.getItem("payments_data") || "[]");
-    const updated = all.filter((p: any) => p.id !== id);
-    localStorage.setItem("payments_data", JSON.stringify(updated));
+    
+    if (db) {
+      await firebaseService.deletePayment(id);
+    } else {
+      const all = JSON.parse(localStorage.getItem("payments_data") || "[]");
+      const updated = all.filter((p: any) => p.id !== id);
+      localStorage.setItem("payments_data", JSON.stringify(updated));
+    }
     onUpdate();
   };
 
@@ -507,10 +651,10 @@ function PembayaranManagement({ user, santriList, payments, onUpdate }: { user: 
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-50">
-            {filteredPayments.map(p => {
+            {filteredPayments.map((p, idx) => {
               const s = santriList.find(santri => santri.nis === p.santriId);
               return (
-                <tr key={p.id} className="hover:bg-slate-50/50 transition-colors">
+                <tr key={`${p.id}_${idx}`} className="hover:bg-slate-50/50 transition-colors">
                   <td className="p-4 font-bold text-slate-800">{s?.nama || p.santriId}</td>
                   <td className="p-4 text-sm text-slate-600">
                     {activeTab === 'bulanan' ? `${p.month} ${p.year}` : (p.month || 'Tanggungan')}
@@ -591,31 +735,46 @@ function PembayaranManagement({ user, santriList, payments, onUpdate }: { user: 
 }
 
 function PelanggaranManagement({ user, santriList, onUpdate }: { user: any; santriList: any[]; onUpdate: () => void }) {
-  const [violations, setViolations] = useState<any[]>(() => {
-    const all = JSON.parse(localStorage.getItem("violations_data") || "[]");
-    const mySantriNis = santriList.map(s => s.nis);
-    return all.filter((v: any) => mySantriNis.includes(v.santriId));
-  });
+  const [violations, setViolations] = useState<any[]>([]);
   const [showModal, setShowModal] = useState(false);
   const [editMode, setEditMode] = useState<string | null>(null);
   const [newViol, setNewViol] = useState({ santriId: "", description: "", level: "Ringan" });
+  const [loading, setLoading] = useState(false);
+
+  const fetchViolations = async () => {
+    setLoading(true);
+    const mySantriNis = santriList.map(s => s.nis);
+    if (db) {
+      const data = await firebaseService.getViolations(mySantriNis);
+      setViolations(data);
+    } else {
+      const all = JSON.parse(localStorage.getItem("violations_data") || "[]");
+      setViolations(all.filter((v: any) => mySantriNis.includes(v.santriId)));
+    }
+    setLoading(false);
+  };
 
   useEffect(() => {
-    const all = JSON.parse(localStorage.getItem("violations_data") || "[]");
-    const mySantriNis = santriList.map(s => s.nis);
-    setViolations(all.filter((v: any) => mySantriNis.includes(v.santriId)));
+    fetchViolations();
   }, [santriList]);
 
-  const saveViol = (e: FormEvent) => {
+  const saveViol = async (e: FormEvent) => {
     e.preventDefault();
-    const all = JSON.parse(localStorage.getItem("violations_data") || "[]");
-    let updated;
-    if (editMode) {
-      updated = all.map((v: any) => v.id === editMode ? { ...newViol, id: v.id, date: v.date } : v);
+    const data = { ...newViol, id: editMode || Date.now().toString(), date: (newViol as any).date || new Date().toISOString() };
+
+    if (db) {
+      await firebaseService.saveViolation(data);
     } else {
-      updated = [...all, { ...newViol, id: Date.now().toString(), date: new Date().toISOString() }];
+      const all = JSON.parse(localStorage.getItem("violations_data") || "[]");
+      let updated;
+      if (editMode) {
+        updated = all.map((v: any) => v.id === editMode ? data : v);
+      } else {
+        updated = [...all, data];
+      }
+      localStorage.setItem("violations_data", JSON.stringify(updated));
     }
-    localStorage.setItem("violations_data", JSON.stringify(updated));
+    
     onUpdate();
     closeModal();
   };
@@ -626,11 +785,16 @@ function PelanggaranManagement({ user, santriList, onUpdate }: { user: any; sant
     setNewViol({ santriId: "", description: "", level: "Ringan" });
   };
 
-  const deleteViol = (id: string) => {
+  const deleteViol = async (id: string) => {
     if (!confirm("Hapus catatan pelanggaran ini?")) return;
-    const all = JSON.parse(localStorage.getItem("violations_data") || "[]");
-    const updated = all.filter((v: any) => v.id !== id);
-    localStorage.setItem("violations_data", JSON.stringify(updated));
+    
+    if (db) {
+      await firebaseService.deleteViolation(id);
+    } else {
+      const all = JSON.parse(localStorage.getItem("violations_data") || "[]");
+      const updated = all.filter((v: any) => v.id !== id);
+      localStorage.setItem("violations_data", JSON.stringify(updated));
+    }
     onUpdate();
   };
 
@@ -648,10 +812,10 @@ function PelanggaranManagement({ user, santriList, onUpdate }: { user: any; sant
         </button>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {violations.map(v => {
+        {violations.map((v, idx) => {
           const s = santriList.find(santri => santri.nis === v.santriId);
           return (
-            <div key={v.id} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-start gap-4">
+            <div key={`${v.id}_${idx}`} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-start gap-4">
               <div className={cn("p-2 rounded-xl shrink-0", v.level === "Ringan" ? "bg-amber-100 text-amber-600" : v.level === "Sedang" ? "bg-orange-100 text-orange-600" : "bg-rose-100 text-rose-600")}>
                 <AlertCircle size={20} />
               </div>
@@ -701,21 +865,44 @@ function PelanggaranManagement({ user, santriList, onUpdate }: { user: any; sant
 }
 
 function InformasiManagement() {
-  const [messages, setMessages] = useState<any[]>(() => JSON.parse(localStorage.getItem("info_data") || "[]"));
+  const [messages, setMessages] = useState<any[]>([]);
   const [showModal, setShowModal] = useState(false);
   const [editMode, setEditMode] = useState<string | null>(null);
   const [newInfo, setNewInfo] = useState({ title: "", content: "" });
+  const [loading, setLoading] = useState(false);
 
-  const saveInfo = (e: FormEvent) => {
-    e.preventDefault();
-    let updated;
-    if (editMode) {
-      updated = messages.map(m => m.id === editMode ? { ...newInfo, id: m.id, date: m.date } : m);
+  const fetchInfo = async () => {
+    setLoading(true);
+    if (db) {
+      const data = await firebaseService.getInformation();
+      setMessages(data);
     } else {
-      updated = [...messages, { ...newInfo, id: Date.now().toString(), date: new Date().toISOString() }];
+      setMessages(JSON.parse(localStorage.getItem("info_data") || "[]"));
     }
-    setMessages(updated);
-    localStorage.setItem("info_data", JSON.stringify(updated));
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    fetchInfo();
+  }, []);
+  const saveInfo = async (e: FormEvent) => {
+    e.preventDefault();
+    const data = { ...newInfo, id: editMode || Date.now().toString(), date: (newInfo as any).date || new Date().toISOString() };
+
+    if (db) {
+      await firebaseService.saveInformation(data);
+    } else {
+      let updated;
+      if (editMode) {
+        updated = messages.map(m => m.id === editMode ? data : m);
+      } else {
+        updated = [...messages, data];
+      }
+      setMessages(updated);
+      localStorage.setItem("info_data", JSON.stringify(updated));
+    }
+    
+    fetchInfo();
     closeModal();
   };
 
@@ -725,11 +912,17 @@ function InformasiManagement() {
     setNewInfo({ title: "", content: "" });
   };
 
-  const deleteInfo = (id: string) => {
+  const deleteInfo = async (id: string) => {
     if (!confirm("Hapus informasi ini?")) return;
-    const updated = messages.filter(m => m.id !== id);
-    setMessages(updated);
-    localStorage.setItem("info_data", JSON.stringify(updated));
+    
+    if (db) {
+      await firebaseService.deleteInformation(id);
+    } else {
+      const updated = messages.filter(m => m.id !== id);
+      setMessages(updated);
+      localStorage.setItem("info_data", JSON.stringify(updated));
+    }
+    fetchInfo();
   };
 
   const openEdit = (m: any) => {
@@ -746,8 +939,8 @@ function InformasiManagement() {
         </button>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {messages.map(m => (
-          <div key={m.id} className="bg-white p-8 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden flex flex-col justify-between">
+        {messages.map((m, idx) => (
+          <div key={`${m.id}_${idx}`} className="bg-white p-8 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden flex flex-col justify-between">
             <div className="absolute top-0 right-0 w-24 h-24 bg-slate-50 rounded-bl-full opacity-50" />
             <div className="relative z-10">
               <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest">{new Date(m.date).toLocaleDateString()}</span>
