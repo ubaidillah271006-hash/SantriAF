@@ -1,0 +1,6 @@
+{
+  "name": "SantriAf",
+  "description": "Boarding school management system for guardians and admins to track student data, attendance, payments, and violations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

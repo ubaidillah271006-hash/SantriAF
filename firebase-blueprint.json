@@ -1,0 +1,107 @@
+{
+  "entities": {
+    "Santri": {
+      "title": "Santri",
+      "description": "Student data in the pesantren",
+      "type": "object",
+      "properties": {
+        "nis": { "type": "string", "description": "Nomor Induk Santri" },
+        "nama": { "type": "string", "description": "Nama Lengkap" },
+        "sekolahUmum": { "type": "string", "description": "Nama Sekolah Umum" },
+        "sekolahDiniyah": { "type": "string", "description": "Nama Sekolah Diniyah" },
+        "alamat": { "type": "string", "description": "Alamat Lengkap" }
+      },
+      "required": ["nis", "nama", "sekolahUmum", "sekolahDiniyah", "alamat"]
+    },
+    "Absensi": {
+      "title": "Absensi",
+      "description": "Attendance record for a santri",
+      "type": "object",
+      "properties": {
+        "santriId": { "type": "string" },
+        "date": { "type": "string", "format": "date" },
+        "subuh": { "type": "boolean" },
+        "sekolahUmum": { "type": "boolean" },
+        "sekolahDiniyah": { "type": "boolean" },
+        "kegiatanMalam": { "type": "boolean" },
+        "jamBelajar": { "type": "boolean" }
+      },
+      "required": ["santriId", "date", "subuh", "sekolahUmum", "sekolahDiniyah", "kegiatanMalam", "jamBelajar"]
+    },
+    "Pembayaran": {
+      "title": "Pembayaran",
+      "description": "Monthly payment record",
+      "type": "object",
+      "properties": {
+        "santriId": { "type": "string" },
+        "month": { "type": "string" },
+        "year": { "type": "number" },
+        "amount": { "type": "number" },
+        "status": { "type": "string", "enum": ["Lunas", "Belum Lunas"] },
+        "date": { "type": "string", "format": "date-time" }
+      },
+      "required": ["santriId", "month", "year", "amount", "status"]
+    },
+    "Pelanggaran": {
+      "title": "Pelanggaran",
+      "description": "Violation record",
+      "type": "object",
+      "properties": {
+        "santriId": { "type": "string" },
+        "description": { "type": "string" },
+        "level": { "type": "string", "enum": ["Ringan", "Sedang", "Berat"] },
+        "date": { "type": "string", "format": "date-time" }
+      },
+      "required": ["santriId", "description", "level", "date"]
+    },
+    "Informasi": {
+      "title": "Informasi",
+      "description": "General information about the pesantren",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "date": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "content", "date"]
+    },
+    "User": {
+      "title": "User",
+      "description": "Application user (Admin or Guardian)",
+      "type": "object",
+      "properties": {
+        "username": { "type": "string" },
+        "password": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "guardian"] },
+        "linkedSantriId": { "type": "string", "description": "Reference to Santri doc if role is guardian" }
+      },
+      "required": ["username", "password", "role"]
+    }
+  },
+  "firestore": {
+    "/santri/{santriId}": {
+      "schema": "Santri",
+      "description": "Collection of santri documents"
+    },
+    "/absensi/{absensiId}": {
+      "schema": "Absensi",
+      "description": "Collection of attendance records"
+    },
+    "/pembayaran/{pembayaranId}": {
+      "schema": "Pembayaran",
+      "description": "Collection of payment records"
+    },
+    "/pelanggaran/{pelanggaranId}": {
+      "schema": "Pelanggaran",
+      "description": "Collection of violation records"
+    },
+    "/informasi/{infoId}": {
+      "schema": "Informasi",
+      "description": "Collection of pesantren information"
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Collection of application users"
+    }
+  }
+}
